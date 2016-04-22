@@ -8,7 +8,7 @@ from GPy.util.linalg import mdot, pdinv, backsub_both_sides, dpotrs, jitchol, dt
 from GPy.util.linalg import tdot_numpy as tdot
 
 class OMGP(CollapsedMixture):
-    """ 
+    """
     Overlapping mixtures of Gaussian processes
     """
     def __init__(self, X, Y, K=2, kernels=None, variance=1., alpha=1., prior_Z='symmetric', name='OMGP'):
@@ -105,7 +105,7 @@ class OMGP(CollapsedMixture):
             B_inv = np.diag(1. / ((self.phi[:, i] + 1e-6) / self.variance))
 
             # Make more stable using cholesky factorization:
-            Bi, LB, LBi, Blogdet = pdinv(K+B_inv)
+            Bi, LB, LBi, Blogdet = pdinv(K + B_inv)
 
             # Data fit
             # alpha = linalg.cho_solve(linalg.cho_factor(K + B_inv), self.Y)
@@ -118,7 +118,7 @@ class OMGP(CollapsedMixture):
 
             # Constant, weighted by  model assignment per point
             #GP_bound += -0.5 * (self.phi[:, i] * np.log(2 * np.pi * self.variance)).sum()
-            GP_bound -= .5*self.D * np.einsum('j,j->',self.phi[:, i], np.log(2 * np.pi * self.variance))
+            GP_bound -= 0.5 * self.D * np.einsum('j,j->', self.phi[:, i], np.log(2 * np.pi * self.variance))
 
         return  GP_bound + self.mixing_prop_bound() + self.H
 
@@ -137,8 +137,8 @@ class OMGP(CollapsedMixture):
             alpha, _ = dpotrs(L_B, self.Y)
             dL_dB_diag = np.sum(np.square(alpha), 1) - np.diag(K_B_inv)
 
-            grad_Lm[:,i] = -0.5 * self.variance * dL_dB_diag / (self.phi[:,i]**2 + 1e-6) 
-            
+            grad_Lm[:,i] = -0.5 * self.variance * dL_dB_diag / (self.phi[:,i]**2 + 1e-6)
+
         grad_phi = grad_Lm + self.mixing_prop_bound_grad() + self.Hgrad
 
         natgrad = grad_phi - np.sum(self.phi * grad_phi, 1)[:, None]
@@ -175,72 +175,129 @@ class OMGP(CollapsedMixture):
             vas.append(va)
 
         return np.array(mus)[:, :, 0].T, np.array(vas)[:, :, 0].T
-    
+
     def sample(self, Xnew, gp=0, size=10, full_cov=True):
         ''' Sample the posterior of a component
         '''
         mu, va = self.predict(Xnew, gp)
-        
+
         samples = []
         for i in range(mu.shape[1]):
             if full_cov:
                 smp = np.random.multivariate_normal(mean=mu[:, i], cov=va, size=size)
             else:
                 smp = np.random.multivariate_normal(mean=mu[:, i], cov=np.diag(np.diag(va)), size=size)
-        
+
             samples.append(smp)
-        
+
         return np.stack(samples, -1)
 
-    def plot(self, gp_num=0):
+    def get_X_linspace(self, gp_num=0, n=50, assignment_limit=None):
+        ''' Get linspace X values for a given GP component.
+        '''
+        if not assignment_limit:
+            XX = np.linspace(self.X.min(), self.X.max(), 50)[:, None]
+        else:
+            mask = self.phi[:, gp_num] > assignment_limit
+            XX = np.linspace(self.X[mask, 0].min(), self.X[mask, 0].max(), 50)[:, None]
+
+        return XX
+
+    def plot_component(self, gp_num, x_vals, col, out_dim=0, style='1d'):
+        ''' Plot an individual GP component.
+        '''
+        from matplotlib import pylab as plt
+        from matplotlib import cm
+
+        YY_mu, YY_var = self.predict(x_vals, gp_num)
+        if style == '1d':
+            plt.fill_between(x_vals[:, 0],
+                             YY_mu[:, out_dim] - 2 * np.sqrt(YY_var[:, out_dim]),
+                             YY_mu[:, out_dim] + 2 * np.sqrt(YY_var[:, out_dim]),
+                             alpha=0.1,
+                             facecolor=col)
+            plt.plot(x_vals, YY_mu[:, out_dim], c=col, lw=2);
+
+        elif style =='2d':
+            plt.plot(YY_mu[:, 0], YY_mu[:, 1], c='w', lw=4);
+            plt.plot(YY_mu[:, 0], YY_mu[:, 1], c=col, lw=2);
+
+    def plot(self, gp_num=0, plot_data=True, plot_dims=[], subplot_dims=False, assignment_limit=None):
         """
         Plot the mixture of Gaussian Processes.
-
         Supports plotting 1d and 2d regression.
+
+        Arguments
+        ---------
+
+        gp_num (int) When plotting data, which GP assignment should data
+                     points be colored by.
+        plot_data (bool) Whether data observations should be plotted.
+        plot_dims (list) A list of output dimensions to plot for each GP.
+        subplot_dims (bool) Whether to plot each output dimension in an
+                            individual subplot.
+        assignment_limit (float) Sets the X-limits when plotting so that plotting
+                                 range is only in a region where there are
+                                 observatiosn with at least assignment_limit
+                                 assignment probability for each GP.
         """
         from matplotlib import pylab as plt
         from matplotlib import cm
 
-        XX = np.linspace(self.X.min(), self.X.max())[:, None]
+        try:
+            Tango = GPy.plotting.Tango
+        except:
+            Tango = GPy.plotting.matplot_dep.Tango
+        Tango.reset()
 
-        if self.Y.shape[1] == 1:
-            plt.scatter(self.X, self.Y, c=self.phi[:, gp_num], cmap=cm.RdBu, vmin=0., vmax=1., lw=0.5)
-            plt.colorbar(label='GP {} assignment probability'.format(gp_num))
+        scatter_kwargs = {'c': self.phi[:, gp_num], 'cmap': cm.RdBu, 'vmin': 0., 'vmax': 1., 'lw': 0.5}
 
-            try:
-                Tango = GPy.plotting.Tango
-            except:
-                Tango = GPy.plotting.matplot_dep.Tango
-            Tango.reset()
+        if len(plot_dims) == 0:
+            plot_dims = range(self.Y.shape[1])
 
-
-            for i in range(self.phi.shape[1]):
-                YY_mu, YY_var = self.predict(XX, i)
-                col = Tango.nextMedium()
-                plt.fill_between(XX[:, 0],
-                                 YY_mu[:, 0] - 2 * np.sqrt(YY_var[:, 0]),
-                                 YY_mu[:, 0] + 2 * np.sqrt(YY_var[:, 0]),
-                                 alpha=0.1,
-                                 facecolor=col)
-                plt.plot(XX, YY_mu[:, 0], c=col, lw=2);
-
-        elif self.Y.shape[1] == 2:
-            plt.scatter(self.Y[:, 0], self.Y[:, 1], c=self.phi[:, gp_num], cmap=cm.RdBu, vmin=0., vmax=1., lw=0.5)
-            plt.colorbar(label='GP {} assignment probability'.format(gp_num))
-
-            try:
-                Tango = GPy.plotting.Tango
-            except:
-                Tango = GPy.plotting.matplot_dep.Tango
-            Tango.reset()
+        if (len(plot_dims) == 1) & (not subplot_dims):
+            if plot_data:
+                plt.scatter(self.X, self.Y, **scatter_kwargs)
+                plt.colorbar(label='GP {} assignment probability'.format(gp_num))
 
             for i in range(self.phi.shape[1]):
-                YY_mu, YY_var = self.predict(XX, i)
+                XX = self.get_X_linspace(i, assignment_limit=assignment_limit)
                 col = Tango.nextMedium()
-                plt.plot(YY_mu[:, 0], YY_mu[:, 1], c=col, lw=2);
+                self.plot_component(i, XX, col)
 
-        else:
-            raise NotImplementedError('Only 1d and 2d regression can be plotted')
+        if (len(plot_dims) == 2) & (not subplot_dims):
+            if plot_data:
+                plt.scatter(self.Y[:, 0], self.Y[:, 1], **scatter_kwargs)
+                plt.colorbar(label='GP {} assignment probability'.format(gp_num))
+
+            for i in range(self.phi.shape[1]):
+                XX = self.get_X_linspace(i, assignment_limit=assignment_limit)
+                col = Tango.nextMedium()
+                self.plot_component(i, XX, col, style='2d')
+
+        if (len(plot_dims) > 2) & (not subplot_dims):
+            raise NotImplementedError('More than 2 dimensions only supported on individual subplots. '\
+                                      'Use the subplot_dims=True keyword.')
+
+        if subplot_dims:
+            n_total = len(plot_dims)
+            n_x = np.floor(np.sqrt(n_total))
+            n_y = int(np.ceil(n_total / n_x))
+            n_x = int(n_x)
+            for d in plot_dims:
+                Tango.reset()
+                plt.subplot(n_x, n_y, d + 1)
+
+                if plot_data:
+                    plt.scatter(self.X, self.Y[:, d], **scatter_kwargs)
+                    plt.colorbar(label='GP {} assignment probability'.format(gp_num))
+
+
+                for i in range(self.phi.shape[1]):
+                    XX = self.get_X_linspace(i, assignment_limit=assignment_limit)
+                    col = Tango.nextMedium()
+                    self.plot_component(i, x_vals=XX, col=col, out_dim=d)
+
 
     def plot_probs(self, gp_num=0):
         """
